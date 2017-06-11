@@ -15,6 +15,9 @@ var extractTriggers = require('../lib/extractTriggers');
 var RSVP = require('rsvp');
 var chalk = require('chalk');
 var firebase = require('firebase');
+var functions = require('firebase-functions');
+var admin = require('firebase-admin');
+var sinon = require('sinon');
 
 var functionsSource = __dirname + '/assets/functions_to_test.js';
 var projectDir = __dirname + '/test-project';
@@ -27,8 +30,17 @@ var tmpDir;
 var app;
 
 var parseFunctionsList = function() {
+  var configStub = sinon.stub(functions, 'config').returns({
+    firebase: {
+      databaseURL: 'https://not-a-project.firebaseio.com',
+      storageBucket: 'not-a-project.appspot.com'
+    }
+  });
+  var adminStub = sinon.stub(admin, 'initializeApp');
   var triggers = [];
-  extractTriggers(require(tmpDir + '/functions'), triggers);
+  extractTriggers(require(functionsSource), triggers);
+  configStub.restore();
+  adminStub.restore();
   return _.map(triggers, 'name');
 };
 
@@ -81,12 +93,44 @@ var testCreateUpdate = function() {
   });
 };
 
+var testCreateUpdateWithFilter = function() {
+  fs.copySync(functionsSource, tmpDir + '/functions/index.js');
+  return new RSVP.Promise(function(resolve) {
+    exec(localFirebase + ' deploy --only functions:dbAction,functions:httpsAction', {'cwd': tmpDir}, function(err, stdout) {
+      console.log(stdout);
+      expect(err).to.be.null;
+      resolve(checkFunctionsListMatch(['dbAction', 'httpsAction']));
+    });
+  });
+};
+
 var testDelete = function() {
   return new RSVP.Promise(function(resolve) {
     exec('> functions/index.js &&' + localFirebase + ' deploy', {'cwd': tmpDir}, function(err, stdout) {
       console.log(stdout);
       expect(err).to.be.null;
       resolve(checkFunctionsListMatch([]));
+    });
+  });
+};
+
+var testDeleteWithFilter = function() {
+  return new RSVP.Promise(function(resolve) {
+    exec('> functions/index.js &&' + localFirebase + ' deploy --only functions:dbAction', {'cwd': tmpDir}, function(err, stdout) {
+      console.log(stdout);
+      expect(err).to.be.null;
+      resolve(checkFunctionsListMatch(['httpsAction']));
+    });
+  });
+};
+
+var testUnknownFilter = function() {
+  return new RSVP.Promise(function(resolve) {
+    exec('> functions/index.js &&' + localFirebase + ' deploy --only functions:unknownFilter', {'cwd': tmpDir}, function(err, stdout) {
+      console.log(stdout);
+      expect(stdout).to.contain('the following filters were specified but do not match any functions in the project: unknownFilter');
+      expect(err).to.be.null;
+      resolve(checkFunctionsListMatch(['httpsAction']));
     });
   });
 };
@@ -192,6 +236,15 @@ var main = function() {
     return testDelete();
   }).then(function() {
     console.log(chalk.green('\u2713 Test passed: deleting functions'));
+    return testCreateUpdateWithFilter();
+  }).then(function() {
+    console.log(chalk.green('\u2713 Test passed: creating functions with filters'));
+    return testDeleteWithFilter();
+  }).then(function() {
+    console.log(chalk.green('\u2713 Test passed: deleting functions with filters'));
+    return testUnknownFilter();
+  }).then(function() {
+    console.log(chalk.green('\u2713 Test passed: threw warning when passing filter with unknown identifier'));
   }).catch(function(err) {
     console.log(chalk.red('Error while running tests: '), err);
     return RSVP.resolve();
